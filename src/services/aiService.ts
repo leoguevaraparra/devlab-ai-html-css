@@ -14,7 +14,7 @@ export function getAI() {
   return ai;
 }
 
-export async function evaluateExercise(exercise: Exercise, code: CodeState): Promise<string> {
+export async function evaluateExercise(exercise: Exercise, code: CodeState): Promise<{ score: number, feedback: string }> {
   const aiClient = getAI();
 
   const prompt = `
@@ -39,26 +39,43 @@ ${code.css}
 
 Tu tarea es evaluar el código del estudiante basándote en las instrucciones.
 Proporciona una retroalimentación constructiva, precisa y clara en español.
-Sigue esta estructura:
+Sigue esta estructura para el texto de retroalimentación:
 1.  **Evaluación General**: Un breve resumen de cómo lo hizo (ej. "¡Excelente trabajo!", "Vas por buen camino, pero faltan detalles").
 2.  **Puntos Fuertes**: Qué hizo bien, destacando buenas prácticas si las hay.
 3.  **Áreas de Mejora / Errores**: Qué instrucciones faltaron por cumplir o qué errores de sintaxis/lógica cometió. Sé específico indicando la línea o el concepto.
 4.  **Sugerencia (Opcional)**: Un pequeño consejo adicional sobre Clean Code o mejores prácticas relacionadas con el tema, sin darle la solución completa directamente si aún no lo ha logrado.
 
-Usa formato Markdown para tu respuesta. Sé alentador pero riguroso.
+CRÍTICO: Tu respuesta DEBE ser un objeto JSON estrictamente válido con la siguiente estructura y nada más:
+{
+  "score": <un número entero del 0 al 100, donde 100 es perfecto y 0 es incorrecto o vacío>,
+  "feedback": "<Sigue la estructura de 4 puntos mencionada arriba usando saltos de línea y formato string seguro>"
+}
 `;
 
   try {
     const response = await aiClient.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3.5-flash',
       contents: prompt,
       config: {
         temperature: 0.2,
       }
     });
-    return response.text || 'No se pudo generar retroalimentación.';
+
+    const text = response.text || '';
+    // Limpieza básica en caso de que Gemini añada ```json al inicio y fin
+    const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    
+    const parsed = JSON.parse(cleanText);
+    return {
+      score: parsed.score || 0,
+      feedback: parsed.feedback || 'Evaluación incompleta.'
+    };
   } catch (error) {
     console.error('Error evaluating code:', error);
-    return 'Hubo un error al contactar con el asistente de IA. Por favor, intenta de nuevo más tarde.';
+    return {
+      score: 0,
+      feedback: 'Hubo un error al contactar con el asistente de IA o procesar su respuesta. Por favor, intenta de nuevo más tarde.'
+    };
   }
 }
+

@@ -4,6 +4,7 @@ import { CodeEditor } from './CodeEditor';
 import { Preview } from './Preview';
 import { FeedbackPanel } from './FeedbackPanel';
 import { evaluateExercise } from '../services/aiService';
+import { submitLtiGrade } from '../services/moodleService';
 import { Play, CheckCircle2, FileCode2, Paintbrush, Loader2, GripVertical, GripHorizontal, PanelLeftClose, PanelLeftOpen, ChevronUp, ChevronDown } from 'lucide-react';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import clsx from 'clsx';
@@ -30,7 +31,13 @@ export function ExerciseView({ exercise, isSidebarOpen, onToggleSidebar }: Exerc
   const handleEvaluate = async () => {
     setIsEvaluating(true);
     const result = await evaluateExercise(exercise, code);
-    setFeedback(result);
+    setFeedback(result.feedback);
+
+    // Envia la nota a Moodle usando la integracion LTI (funciona en background)
+    if (result.score !== undefined) {
+      submitLtiGrade(result.score, result.feedback).catch(err => console.error(err));
+    }
+
     setIsEvaluating(false);
   };
 
@@ -62,7 +69,7 @@ export function ExerciseView({ exercise, isSidebarOpen, onToggleSidebar }: Exerc
         </div>
 
         <div className="bg-slate-800/50 rounded-lg border border-slate-700/50 overflow-hidden">
-          <button 
+          <button
             onClick={() => setIsInstructionsOpen(!isInstructionsOpen)}
             className="w-full flex items-center justify-between p-4 hover:bg-slate-800/80 transition-colors"
           >
@@ -72,7 +79,7 @@ export function ExerciseView({ exercise, isSidebarOpen, onToggleSidebar }: Exerc
             </h3>
             {isInstructionsOpen ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
           </button>
-          
+
           <div className={clsx("transition-all duration-300 ease-in-out overflow-hidden", isInstructionsOpen ? "max-h-[1000px] opacity-100" : "max-h-0 opacity-0")}>
             <ul className="space-y-2 p-4 pt-0">
               {exercise.instructions.map((inst, idx) => (
@@ -89,7 +96,7 @@ export function ExerciseView({ exercise, isSidebarOpen, onToggleSidebar }: Exerc
       </div>
 
       <div className="flex-1 overflow-hidden p-4">
-        <PanelGroup direction="horizontal" className="h-full w-full">
+        <PanelGroup orientation="horizontal" className="h-full w-full">
           <Panel defaultSize={50} minSize={30} className="flex flex-col gap-4 pr-3">
             <div className="flex items-center gap-2 bg-slate-900 p-1 rounded-lg border border-slate-800 self-start">
               <button
@@ -138,7 +145,7 @@ export function ExerciseView({ exercise, isSidebarOpen, onToggleSidebar }: Exerc
           </PanelResizeHandle>
 
           <Panel defaultSize={50} minSize={30} className="pl-3">
-            <PanelGroup direction="vertical">
+            <PanelGroup orientation="vertical">
               <Panel defaultSize={50} minSize={20} className="pb-3">
                 <Preview code={code} />
               </Panel>
