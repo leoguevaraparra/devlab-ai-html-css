@@ -1,104 +1,147 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
 
+// ============================================================
+// Utilidades de extracción de token
+// ============================================================
+
+/**
+ * Extrae el token LTIK del request.
+ * Soporta dos fuentes (redundancia recomendada para iframes y proxies):
+ * 1. Query string: ?ltik=<token>
+ * 2. Authorization header: Bearer <token>
+ *
+ * @param {import('express').Request} req
+ * @returns {string | null}
+ */
 function extractToken(req) {
-  if (req.query && req.query.ltik) {
+  if (req.query?.ltik) {
     return req.query.ltik;
   }
-  if (req.headers.authorization && req.headers.authorization.split(' ')[0] === 'Bearer') {
-    return req.headers.authorization.split(' ')[1];
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) {
+    return authHeader.slice(7);
   }
   return null;
 }
 
+// ============================================================
+// Configuración de rutas LTI
+// ============================================================
+
+/**
+ * Registra las rutas API protegidas por LTI en la aplicación Express.
+ *
+ * @param {import('express').Application} app
+ * @param {import('ltijs').IdToken} Provider - Instancia del proveedor ltijs
+ */
 export function setupLtiRoutes(app, Provider) {
   const LTI_KEY = process.env.LTI_KEY || 'LlaveSecretaEncriptadaParaFirmarLtikLocalmente';
 
   app.use('/api', express.json());
 
-  // Custom middleware to verify the LTI Token (ltik) from the frontend
+  // ============================================================
+  // Middleware: Verificación del LTIK
+  // Valida el JWT y recupera el idtoken de la DB de ltijs
+  // ============================================================
   const verifyLti = async (req, res, next) => {
     const token = extractToken(req);
 
     if (!token) {
-      return res.status(401).json({ error: 'Falta token LTIK' });
+      return res.status(401).json({ error: 'Token LTIK ausente en la solicitud.' });
     }
 
     try {
-      // Validamos el JWT con la misma llave maestra que usa ltijs para firmar
-      // El payload contiene la sesión { context, user, data, ... }
+      // Decodificar el LTIK con la llave maestra para obtener la sesión
       const decoded = jwt.verify(token, LTI_KEY);
       req.ltiSession = decoded;
 
-      // ltijs expone métodos útiles si inyectamos los IDs,
-      // pero para extraer nombre y rol, el payload decodificado suele bastar.
-      // O podemos recuperar el IdToken nativo de ltijs:
-      const idtoken = await Provider.Database.Get(false, 'idtoken', { _id: req.ltiSession.data.id });
-      if (idtoken) {
-        req.ltiUser = idtoken.user;
-        req.ltiContext = idtoken.platformContext;
+      // Recuperar el idtoken completo desde la base de datos de ltijs
+      // El idtoken es necesario para las operaciones de calificación (Grade API)
+      const sessionId = decoded?.data?.id || decoded?.id;
+      if (sessionId) {
+        const idtokenRecord = await Provider.Database.Get(false, 'idtoken', { _id: sessionId });
+        if (idtokenRecord && idtokenRecord[0]) {
+          req.ltiIdToken = idtokenRecord[0];
+        }
       }
 
       next();
     } catch (error) {
-      console.error('Invalid LTI Token:', error.message);
-      return res.status(403).json({ error: 'Token LTIK inválido o expirado' });
+      console.error('[LTI] Token inválido:', error.message);
+      return res.status(403).json({ error: 'Token LTIK inválido o expirado.', detail: error.message });
     }
   };
 
-  // Endpoint: GET /api/me
+  // ============================================================
+  // GET /api/me — Contexto del usuario autenticado
+  // ============================================================
   app.get('/api/me', verifyLti, (req, res) => {
-    res.json({
+    // Construir respuesta con fallbacks robustos para cada campo
+    const idtoken = req.ltiIdToken;
+    const session = req.ltiSession;
+
+    const userId = idtoken?.user || session?.user || session?.data?.id || 'unknown';
+    const userName = idtoken?.userInfo?.name
+      || session?.data?.user
+      || session?.userInfo?.name
+      || 'Estudiante';
+    const userRoles = idtoken?.platformContext?.roles
+      || session?.data?.roles
+      || [];
+    const context = idtoken?.platformContext?.context
+      || session?.platformContext?.context
+      || {};
+
+    return res.json({
       success: true,
-      user: {
-        id: req.ltiUser ? req.ltiUser : req.ltiSession.user,
-        name: req.ltiSession.data && req.ltiSession.data.user ? req.ltiSession.data.user : 'Estudiante anónimo',
-        roles: req.ltiSession.data && req.ltiSession.data.roles ? req.ltiSession.data.roles : []
-      },
-      context: req.ltiContext ? req.ltiContext : {}
+      user: { id: userId, name: userName, roles: userRoles },
+      context,
     });
   });
 
-  // Endpoint: POST /api/grade
+  // ============================================================
+  // POST /api/grade — Envío de calificación al libro de Moodle
+  // ============================================================
   app.post('/api/grade', verifyLti, async (req, res) => {
+    const { score, comment } = req.body;
+
+    // Validar que score sea un número en rango válido
+    const numericScore = Number(score);
+    if (isNaN(numericScore) || numericScore < 0 || numericScore > 100) {
+      return res.status(400).json({
+        error: 'El campo "score" es obligatorio y debe ser un número entre 0 y 100.',
+      });
+    }
+
     try {
-      const { score, comment } = req.body; // score expects 0 to 100
+      // ltijs espera score en escala 0.0 – 1.0 para el protocolo LTI AGS
+      const ltiScore = numericScore / 100;
 
-      // Retrieve the full lti token so we can use Provider.Grade API natively
-      const idtoken = req.ltiSession;
-
-      if (!score && score !== 0) {
-        return res.status(400).json({ error: 'Se requiere una nota numérica (score)' });
-      }
-
-      const ltiScore = score / 100; // Moodle expects 0.0 to 1.0 generally, but let's check ltijs docs (0-1 usually)
-
-      // Enviar nota a Moodle usando Provider.Grade
-      // En lti.Grade.scorePublish(token, { scoreGiven, activityProgress, gradingProgress...})
       const gradePayload = {
         scoreGiven: ltiScore,
         scoreMaximum: 1,
         activityProgress: 'Completed',
         gradingProgress: 'FullyGraded',
-        comment: comment || 'Laboratorio finalizado.'
+        comment: comment || 'Laboratorio completado.',
       };
 
-      // Invocamos el publicador de notas (necesita el request de lti real o el token extraído)
-      const tokenForGrade = req.ltiSession.data ? req.ltiSession.data : req.ltiSession;
+      // scorePublish en modo ltiaas acepta el token LTIK como primer argumento
+      const ltik = extractToken(req);
+      const result = await Provider.Grade.scorePublish(ltik, gradePayload);
 
-      // La mejor forma nativa de pasar notas con ltijs en un middleware manual: 
-      // idtoken de req.ltiSession es válido, pero normalmente usamos Provider.Grade
-      const result = await Provider.Grade.scorePublish(extractToken(req), gradePayload);
-
-      res.json({
+      console.log(`[Grade] ✅ Nota enviada: ${numericScore}/100 (${ltiScore})`);
+      return res.json({
         success: true,
-        message: 'Nota enviada correctamente a Moodle',
-        result
+        message: `Nota ${numericScore}/100 enviada correctamente a Moodle.`,
+        result,
       });
     } catch (error) {
-      console.error('Error enviando nota:', error.message);
-      res.status(500).json({ error: 'Fallo la sincronización con Moodle', details: error.message });
+      console.error('[Grade] ❌ Error al publicar nota:', error.message);
+      return res.status(500).json({
+        error: 'No se pudo sincronizar la calificación con Moodle.',
+        detail: error.message,
+      });
     }
   });
-
 }
