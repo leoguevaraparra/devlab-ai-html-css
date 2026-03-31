@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { GoogleGenAI } from '@google/genai';
 import { Exercise, CodeState } from '../types';
 
@@ -5,9 +6,10 @@ let ai: GoogleGenAI | null = null;
 
 export function getAI() {
   if (!ai) {
-    const apiKey = process.env.GEMINI_API_KEY;
+    // En Vite, las variables accesibles al cliente deben empezar con VITE_
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
     if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is not set');
+      throw new Error('VITE_GEMINI_API_KEY is not set');
     }
     ai = new GoogleGenAI({ apiKey });
   }
@@ -15,8 +17,6 @@ export function getAI() {
 }
 
 export async function evaluateExercise(exercise: Exercise, code: CodeState): Promise<{ score: number, feedback: string }> {
-  const aiClient = getAI();
-
   const prompt = `
 Actúa como un profesor senior de desarrollo web, experto en diseño instruccional y Clean Code.
 Un estudiante está resolviendo el siguiente ejercicio de programación en un laboratorio virtual.
@@ -53,8 +53,9 @@ CRÍTICO: Tu respuesta DEBE ser un objeto JSON estrictamente válido con la sigu
 `;
 
   try {
+    const aiClient = getAI();
     const response = await aiClient.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
         temperature: 0.2,

@@ -1,6 +1,7 @@
 import express from 'express';
 import { Provider } from 'ltijs';
-import { Database } from 'ltijs-sequelize';
+import ltijsSequelize from 'ltijs-sequelize';
+const { Database } = ltijsSequelize;
 import dotenv from 'dotenv';
 import cors from 'cors';
 import { setupLtiRoutes } from './routes.js';
